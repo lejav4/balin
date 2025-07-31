@@ -1,0 +1,77 @@
+@import url('admin-clubs.css');
+/* Add player-specific tweaks here if needed */
+/* UX improvements for upper buttons on player admin page */
+.obzg-player-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7em;
+  align-items: center;
+  margin-bottom: 1.5rem;
+  margin-top: 20px;
+}
+.obzg-player-toolbar .btn, .obzg-player-toolbar .form-select {
+  height: 44px;
+  min-height: 44px;
+  line-height: 1.2;
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  font-size: 1.08em;
+  border-radius: 0.6rem;
+}
+.obzg-player-toolbar .btn {
+  font-size: 1.08em;
+  padding: 0.55em 1.3em;
+  border-radius: 0.6rem;
+  box-shadow: 0 2px 8px rgba(13,110,253,0.07);
+  transition: background 0.15s, color 0.15s, box-shadow 0.15s;
+}
+.obzg-player-toolbar .btn:focus, .obzg-player-toolbar .btn:hover {
+  box-shadow: 0 4px 16px rgba(13,110,253,0.13);
+  filter: brightness(1.04);
+}
+.obzg-player-toolbar .form-select {
+  min-width: 180px;
+  max-width: 300px;
+  font-size: 1.05em;
+  border-radius: 0.6rem;
+  margin-left: 0.2em;
+  padding-top: 0.375rem;
+  padding-bottom: 0.375rem;
+}
+.obzg-player-actions .btn {
+  min-width: 34px;
+  min-height: 34px;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  font-size: 1.1em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.4rem;
+  margin-right: 0.3em;
+  margin-bottom: 0.2em;
+}
+.obzg-player-actions .btn i {
+  font-size: 1.1em;
+  margin: 0;
+}
+#obzg-add-player-btn {
+  margin-bottom: 0 !important;
+}
+#obzg-add-player-btn i,
+#obzg-import-players-btn i {
+  margin-right: 0.5em;
+}
+@media (max-width: 600px) {
+  .obzg-player-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.5rem;
+  }
+  .obzg-player-toolbar .form-select {
+    margin-left: 0;
+    width: 100%;
+  }
+} 
