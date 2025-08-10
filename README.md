@@ -21,6 +21,7 @@ A comprehensive tournament management system for bocce ball competitions, built 
 - **Real-time Result Entry**: Enter match results with live updates
 - **Round Navigation**: View matches by round or all rounds at once
 - **Result Validation**: Ensure all results are entered before generating new rounds
+- **Tournament Brackets**: Visual bracket view showing tournament progression
 
 ### Standings & Rankings
 - **Live Standings**: Real-time tournament standings
@@ -123,6 +124,7 @@ The tournament system implements a proper Swiss system with:
 2. Enter match results
 3. Generate subsequent rounds based on results
 4. View live standings and detailed statistics
+5. Switch between Rounds View and Brackets View for different perspectives
 
 ## 🌐 Deployment
 
