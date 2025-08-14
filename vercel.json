@@ -1,24 +1,14 @@
 {
   "version": 2,
-  "builds": [
-    {
-      "src": "obzg-react-frontend/package.json",
-      "use": "@vercel/static-build",
-      "config": {
-        "distDir": "build"
-      }
-    }
-  ],
+  "buildCommand": "cd obzg-react-frontend && npm install && npm run build",
+  "outputDirectory": "obzg-react-frontend/build",
   "routes": [
     {
-      "src": "/static/(.*)",
-      "dest": "/obzg-react-frontend/build/static/$1"
+      "handle": "filesystem"
     },
     {
       "src": "/(.*)",
-      "dest": "/obzg-react-frontend/build/index.html"
+      "dest": "/index.html"
     }
-  ],
-  "buildCommand": "cd obzg-react-frontend && npm install && npm run build",
-  "outputDirectory": "obzg-react-frontend/build"
+  ]
 } 
