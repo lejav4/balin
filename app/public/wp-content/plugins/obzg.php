@@ -840,6 +840,15 @@ class OBZG_Plugin {
             return $a['games_played'] - $b['games_played'];
         });
 
+        // For rounds 3 and 4, limit to top teams only
+        if ($round_number == 3) {
+            // Round 3: Only top 8 teams (4 matches)
+            $standings = array_slice($standings, 0, 8);
+        } elseif ($round_number == 4) {
+            // Round 4: Only top 4 teams (2 matches)
+            $standings = array_slice($standings, 0, 4);
+        }
+
         // First round: random pairing
         if ($round_number == 1) {
             $clubs_copy = array_values($standings);
@@ -3008,6 +3017,13 @@ class OBZG_Plugin {
             ]);
         }
 
+        // Add capabilities to subscriber role (read-only access)
+        $subscriber_role = get_role('subscriber');
+        if ($subscriber_role) {
+            $subscriber_role->add_cap('obzg_enter_results');
+            // Subscribers can only enter results, no management capabilities
+        }
+
         // Add capabilities to administrator role
         $admin_role = get_role('administrator');
         if ($admin_role) {
@@ -3095,6 +3111,7 @@ class OBZG_Plugin {
         $role_names = [
             'obzg_super_admin' => 'Super Admin',
             'obzg_user' => 'OBZG User',
+            'subscriber' => 'OBZG Uporabnik',
             'guest' => 'Guest'
         ];
         
@@ -3108,6 +3125,23 @@ class OBZG_Plugin {
         $user = get_user_by('ID', $user_id);
         if (!$user) return [];
         
+        // Get user role
+        $user_roles = $user->roles;
+        $is_subscriber = in_array('subscriber', $user_roles);
+        
+        // Subscribers get very limited capabilities
+        if ($is_subscriber) {
+            return [
+                'obzg_manage_tournaments' => false,
+                'obzg_manage_clubs' => false,
+                'obzg_manage_players' => false,
+                'obzg_enter_results' => true,  // Can only enter results
+                'obzg_create_users' => false,
+                'obzg_manage_users' => false
+            ];
+        }
+        
+        // For other roles, check actual capabilities
         return [
             'obzg_manage_tournaments' => $user->has_cap('obzg_manage_tournaments'),
             'obzg_manage_clubs' => $user->has_cap('obzg_manage_clubs'),
