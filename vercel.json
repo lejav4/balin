@@ -1,14 +1,15 @@
 {
   "version": 2,
-  "buildCommand": "cd obzg-react-frontend && npm install && npm run build",
-  "outputDirectory": "obzg-react-frontend/build",
+  "builds": [
+    {
+      "src": "obzg-react-frontend/package.json",
+      "use": "@vercel/static-build"
+    }
+  ],
   "routes": [
     {
-      "handle": "filesystem"
-    },
-    {
       "src": "/(.*)",
-      "dest": "/index.html"
+      "dest": "/obzg-react-frontend/build/index.html"
     }
   ]
 } 
