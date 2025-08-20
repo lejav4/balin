@@ -15,9 +15,8 @@ class OBZG_Plugin {
         add_action( 'init', [ $this, 'register_custom_post_types' ] );
         add_action( 'admin_menu', [ $this, 'register_admin_pages' ] );
         add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_admin_assets' ] );
-        
-        // Add custom user roles on plugin activation
-        add_action( 'init', [ $this, 'add_custom_user_roles' ] );
+        // Ensure custom roles
+        add_action( 'init', [ $this, 'ensure_custom_roles' ] );
         
         // AJAX handlers
         add_action( 'wp_ajax_obzg_save_club', [ $this, 'ajax_save_club' ] );
@@ -49,11 +48,41 @@ class OBZG_Plugin {
         // REST API endpoints for React frontend
         add_action( 'rest_api_init', [ $this, 'register_rest_routes' ] );
         
-        // User management endpoints
-        add_action( 'rest_api_init', [ $this, 'register_user_management_routes' ] );
-        
         // Add CORS headers for React frontend
         add_action( 'init', [ $this, 'add_cors_headers' ] );
+    }
+
+    /**
+     * Ensure custom roles/capabilities exist
+     */
+    public function ensure_custom_roles() {
+        // Remove legacy role if it exists
+        if (get_role('obzg_results')) {
+            // Migrate users from obzg_results to subscriber
+            $users = get_users([ 'role' => 'obzg_results' ]);
+            foreach ($users as $u) {
+                $u->add_role('subscriber');
+                $u->remove_role('obzg_results');
+            }
+            remove_role('obzg_results');
+        }
+
+        // Ensure capabilities on standard roles
+        $admin = get_role('administrator');
+        if ($admin && !$admin->has_cap('obzg_enter_results')) {
+            $admin->add_cap('obzg_enter_results');
+        }
+        $subscriber = get_role('subscriber');
+        if ($subscriber && !$subscriber->has_cap('obzg_enter_results')) {
+            $subscriber->add_cap('obzg_enter_results');
+        }
+
+        // Make sure designated super admin email has admin role
+        $super_email = 'leja.vehovec28@gmail.com';
+        $su = get_user_by('email', $super_email);
+        if ($su && !in_array('administrator', (array)$su->roles, true)) {
+            $su->set_role('administrator');
+        }
     }
 
     public function register_custom_post_types() {
@@ -839,15 +868,6 @@ class OBZG_Plugin {
             }
             return $a['games_played'] - $b['games_played'];
         });
-
-        // For rounds 3 and 4, limit to top teams only
-        if ($round_number == 3) {
-            // Round 3: Only top 8 teams (4 matches)
-            $standings = array_slice($standings, 0, 8);
-        } elseif ($round_number == 4) {
-            // Round 4: Only top 4 teams (2 matches)
-            $standings = array_slice($standings, 0, 4);
-        }
 
         // First round: random pairing
         if ($round_number == 1) {
@@ -1696,10 +1716,11 @@ class OBZG_Plugin {
      */
     public function register_rest_routes() {
         // Authentication endpoints
+        // Registration disabled for public (super admin only) – keeping route but locked
         register_rest_route('obzg/v1', '/auth/register', [
             'methods' => 'POST',
             'callback' => [$this, 'rest_auth_register'],
-            'permission_callback' => [$this, 'rest_check_auth']
+            'permission_callback' => [$this, 'rest_check_super_admin']
         ]);
 
         register_rest_route('obzg/v1', '/auth/login', [
@@ -1718,6 +1739,23 @@ class OBZG_Plugin {
             'methods' => 'GET',
             'callback' => [$this, 'rest_auth_me'],
             'permission_callback' => [$this, 'rest_check_auth']
+        ]);
+
+        // Users listing for super admin
+        register_rest_route('obzg/v1', '/users', [
+            'methods' => 'GET',
+            'callback' => [$this, 'rest_get_users'],
+            'permission_callback' => [$this, 'rest_check_super_admin']
+        ]);
+        register_rest_route('obzg/v1', '/users/(?P<id>\\d+)', [
+            'methods' => 'POST',
+            'callback' => [$this, 'rest_update_user'],
+            'permission_callback' => [$this, 'rest_check_super_admin']
+        ]);
+        register_rest_route('obzg/v1', '/users/(?P<id>\\d+)', [
+            'methods' => 'DELETE',
+            'callback' => [$this, 'rest_delete_user'],
+            'permission_callback' => [$this, 'rest_check_super_admin']
         ]);
 
         // Temporary endpoint to delete test users
@@ -1788,13 +1826,26 @@ class OBZG_Plugin {
         register_rest_route('obzg/v1', '/tournaments', [
             'methods' => 'GET',
             'callback' => [$this, 'rest_get_tournaments'],
-            'permission_callback' => '__return_true'
+            'permission_callback' => [$this, 'rest_check_public_read']
         ]);
 
         register_rest_route('obzg/v1', '/tournaments/(?P<id>\d+)', [
             'methods' => 'GET',
             'callback' => [$this, 'rest_get_tournament'],
-            'permission_callback' => '__return_true'
+            'permission_callback' => [$this, 'rest_check_public_read']
+        ]);
+
+        // Tournament groups management (auth required)
+        register_rest_route('obzg/v1', '/tournaments/(?P<id>\d+)/groups', [
+            'methods' => 'POST',
+            'callback' => [$this, 'rest_update_tournament_groups'],
+            'permission_callback' => [$this, 'rest_check_auth']
+        ]);
+
+        register_rest_route('obzg/v1', '/tournaments/(?P<id>\d+)/groups/randomize', [
+            'methods' => 'POST',
+            'callback' => [$this, 'rest_randomize_tournament_groups'],
+            'permission_callback' => [$this, 'rest_check_auth']
         ]);
 
         register_rest_route('obzg/v1', '/tournaments', [
@@ -1807,6 +1858,13 @@ class OBZG_Plugin {
             'methods' => 'DELETE',
             'callback' => [$this, 'rest_delete_tournament'],
             'permission_callback' => [$this, 'rest_check_auth']
+        ]);
+
+        // Duplicate tournament (super admin only)
+        register_rest_route('obzg/v1', '/tournaments/(?P<id>\d+)/duplicate', [
+            'methods' => 'POST',
+            'callback' => [$this, 'rest_duplicate_tournament'],
+            'permission_callback' => [$this, 'rest_check_super_admin']
         ]);
 
         // Tournament specific endpoints
@@ -1881,6 +1939,11 @@ class OBZG_Plugin {
             return new WP_Error('not_found', 'Club not found', ['status' => 404]);
         }
 
+        // Prefer persisted groups; otherwise compute
+        $persisted_groups = $this->get_tournament_groups($tournament->ID);
+        $groups_to_send = !empty($persisted_groups) ? $persisted_groups : $groups;
+
+        $group_count = get_post_meta($tournament->ID, '_obzg_tournament_group_count', true);
         $data = [
             'id' => $club->ID,
             'title' => $club->post_title,
@@ -1897,14 +1960,6 @@ class OBZG_Plugin {
     }
 
     public function rest_save_club($request) {
-        if (!$this->rest_check_auth($request)) {
-            return new WP_Error('unauthorized', 'Unauthorized', ['status' => 401]);
-        }
-
-        if (!$this->can_manage_clubs()) {
-            return new WP_Error('insufficient_permissions', 'Insufficient permissions to manage clubs', ['status' => 403]);
-        }
-
         $params = $request->get_params();
         
         $club_data = [
@@ -1936,14 +1991,6 @@ class OBZG_Plugin {
     }
 
     public function rest_delete_club($request) {
-        if (!$this->rest_check_auth($request)) {
-            return new WP_Error('unauthorized', 'Unauthorized', ['status' => 401]);
-        }
-
-        if (!$this->can_manage_clubs()) {
-            return new WP_Error('insufficient_permissions', 'Insufficient permissions to manage clubs', ['status' => 403]);
-        }
-
         $club_id = $request['id'];
         $result = wp_delete_post($club_id, true);
         
@@ -1995,14 +2042,6 @@ class OBZG_Plugin {
     }
 
     public function rest_save_player($request) {
-        if (!$this->rest_check_auth($request)) {
-            return new WP_Error('unauthorized', 'Unauthorized', ['status' => 401]);
-        }
-
-        if (!$this->can_manage_players()) {
-            return new WP_Error('insufficient_permissions', 'Insufficient permissions to manage players', ['status' => 403]);
-        }
-
         $params = $request->get_params();
         
         $player_data = [
@@ -2034,14 +2073,6 @@ class OBZG_Plugin {
     }
 
     public function rest_delete_player($request) {
-        if (!$this->rest_check_auth($request)) {
-            return new WP_Error('unauthorized', 'Unauthorized', ['status' => 401]);
-        }
-
-        if (!$this->can_manage_players()) {
-            return new WP_Error('insufficient_permissions', 'Insufficient permissions to manage players', ['status' => 403]);
-        }
-
         $player_id = $request['id'];
         $result = wp_delete_post($player_id, true);
         
@@ -2063,11 +2094,15 @@ class OBZG_Plugin {
         foreach ($tournaments as $tournament) {
             $clubs = self::get_tournament_clubs($tournament->ID);
             $rounds = self::get_tournament_rounds($tournament->ID);
+            $groups = $this->get_tournament_groups($tournament->ID);
+            
+            // Auto-update tournament status
+            $updated_status = $this->auto_update_tournament_status($tournament->ID, $clubs, $rounds);
             
             $data[] = [
                 'id' => $tournament->ID,
                 'title' => $tournament->post_title,
-                'status' => get_post_meta($tournament->ID, '_obzg_tournament_status', true),
+                'status' => $updated_status,
                 'start_date' => get_post_meta($tournament->ID, '_obzg_tournament_start_date', true),
                 'end_date' => get_post_meta($tournament->ID, '_obzg_tournament_end_date', true),
                 'location' => get_post_meta($tournament->ID, '_obzg_tournament_location', true),
@@ -2076,11 +2111,40 @@ class OBZG_Plugin {
                 'max_teams' => get_post_meta($tournament->ID, '_obzg_tournament_max_teams', true),
                 'num_rounds' => get_post_meta($tournament->ID, '_obzg_tournament_num_rounds', true),
                 'clubs' => $clubs,
-                'rounds' => $rounds
+                'rounds' => $rounds,
+                'groups' => $groups
             ];
         }
 
         return new WP_REST_Response($data, 200);
+    }
+
+    private function auto_update_tournament_status($tournament_id, $clubs, $rounds) {
+        $current_status = get_post_meta($tournament_id, '_obzg_tournament_status', true);
+        $start_date = get_post_meta($tournament_id, '_obzg_tournament_start_date', true);
+        $end_date = get_post_meta($tournament_id, '_obzg_tournament_end_date', true);
+        $today = current_time('Y-m-d');
+        
+        // Check if tournament has ended (end_date is in the past)
+        if ($end_date && $end_date < $today) {
+            // Tournament has ended - status should be completed
+            $new_status = 'completed';
+        }
+        // Check if tournament has started (start_date is today or in the past)
+        elseif ($start_date && $start_date <= $today) {
+            // Tournament is currently active
+            $new_status = 'active';
+        } else {
+            // Tournament hasn't started yet
+            $new_status = 'draft';
+        }
+        
+        // Update status if it has changed
+        if ($current_status !== $new_status) {
+            update_post_meta($tournament_id, '_obzg_tournament_status', $new_status);
+        }
+        
+        return $new_status;
     }
 
     public function rest_get_tournament($request) {
@@ -2091,50 +2155,39 @@ class OBZG_Plugin {
             return new WP_Error('not_found', 'Tournament not found', ['status' => 404]);
         }
 
-        $club_ids = self::get_tournament_clubs($tournament->ID);
-        $optimal_rounds = !empty($club_ids) ? (int)ceil(log(count($club_ids), 2)) : 0;
-
-        // Get club names for display
-        $clubs_with_names = [];
-        foreach ($club_ids as $club_id) {
-            $club_post = get_post($club_id);
-            if ($club_post && $club_post->post_type === 'obzg_club') {
-                $clubs_with_names[] = [
-                    'id' => $club_id,
-                    'title' => $club_post->post_title
-                ];
-            }
-        }
+        $clubs = self::get_tournament_clubs($tournament->ID);
+        $rounds = self::get_tournament_rounds($tournament->ID);
+        $optimal_rounds = !empty($clubs) ? (int)ceil(log(count($clubs), 2)) : 0;
+        $location_value = get_post_meta($tournament->ID, '_obzg_tournament_location', true);
+        $group_count = get_post_meta($tournament->ID, '_obzg_tournament_group_count', true);
+        $groups = $this->get_tournament_groups($tournament->ID);
+        
+        // Auto-update tournament status
+        $updated_status = $this->auto_update_tournament_status($tournament->ID, $clubs, $rounds);
 
         $data = [
             'id' => $tournament->ID,
             'title' => $tournament->post_title,
-            'status' => get_post_meta($tournament->ID, '_obzg_tournament_status', true),
+            'status' => $updated_status,
             'start_date' => get_post_meta($tournament->ID, '_obzg_tournament_start_date', true),
             'end_date' => get_post_meta($tournament->ID, '_obzg_tournament_end_date', true),
-            'location' => get_post_meta($tournament->ID, '_obzg_tournament_location', true),
+            'location' => $location_value,
             'desc' => get_post_meta($tournament->ID, '_obzg_tournament_desc', true),
             'tournament_type' => get_post_meta($tournament->ID, '_obzg_tournament_type', true),
             'max_teams' => get_post_meta($tournament->ID, '_obzg_tournament_max_teams', true),
             'num_rounds' => get_post_meta($tournament->ID, '_obzg_tournament_num_rounds', true),
-            'clubs' => $clubs_with_names,
-            'rounds' => self::get_tournament_rounds($tournament->ID),
+            'group_count' => $group_count ? intval($group_count) : 1,
+            'clubs' => $clubs,
+            'rounds' => $rounds,
             'standings' => self::get_tournament_standings($tournament->ID),
-            'optimal_rounds' => $optimal_rounds
+            'optimal_rounds' => $optimal_rounds,
+            'groups' => $groups
         ];
 
         return new WP_REST_Response($data, 200);
     }
 
     public function rest_save_tournament($request) {
-        if (!$this->rest_check_auth($request)) {
-            return new WP_Error('unauthorized', 'Unauthorized', ['status' => 401]);
-        }
-
-        if (!$this->can_manage_tournaments()) {
-            return new WP_Error('insufficient_permissions', 'Insufficient permissions to manage tournaments', ['status' => 403]);
-        }
-
         $params = $request->get_params();
         
         $tournament_title = sanitize_text_field($params['title']);
@@ -2183,7 +2236,7 @@ class OBZG_Plugin {
         }
 
         // Save meta fields
-        $meta_fields = ['status', 'start_date', 'end_date', 'location', 'desc', 'tournament_type', 'max_teams', 'num_rounds'];
+        $meta_fields = ['status', 'start_date', 'end_date', 'location', 'desc', 'tournament_type', 'max_teams', 'num_rounds', 'group_count'];
         foreach ($meta_fields as $field) {
             if (isset($params[$field])) {
                 update_post_meta($tournament_id, '_obzg_tournament_' . $field, sanitize_text_field($params[$field]));
@@ -2194,14 +2247,6 @@ class OBZG_Plugin {
     }
 
     public function rest_delete_tournament($request) {
-        if (!$this->rest_check_auth($request)) {
-            return new WP_Error('unauthorized', 'Unauthorized', ['status' => 401]);
-        }
-
-        if (!$this->can_manage_tournaments()) {
-            return new WP_Error('insufficient_permissions', 'Insufficient permissions to manage tournaments', ['status' => 403]);
-        }
-
         $tournament_id = $request['id'];
         $result = wp_delete_post($tournament_id, true);
         
@@ -2212,15 +2257,37 @@ class OBZG_Plugin {
         return new WP_REST_Response(['success' => true], 200);
     }
 
+    public function rest_duplicate_tournament($request) {
+        $tournament_id = intval($request['id']);
+        $orig = get_post($tournament_id);
+        if (!$orig || $orig->post_type !== 'obzg_tournament') {
+            return new WP_Error('not_found', 'Tournament not found', ['status' => 404]);
+        }
+        // Create new post with "Copy of" prefix to avoid duplicate title validation
+        $new_post_id = wp_insert_post([
+            'post_title' => 'Copy of ' . $orig->post_title,
+            'post_type' => 'obzg_tournament',
+            'post_status' => 'publish'
+        ]);
+        if (is_wp_error($new_post_id)) {
+            return $new_post_id;
+        }
+        // Copy meta
+        $meta_keys = ['_obzg_tournament_status','_obzg_tournament_start_date','_obzg_tournament_end_date','_obzg_tournament_location','_obzg_tournament_desc','_obzg_tournament_type','_obzg_tournament_max_teams','_obzg_tournament_num_rounds','_obzg_tournament_group_count'];
+        foreach ($meta_keys as $k) {
+            $v = get_post_meta($tournament_id, $k, true);
+            if ($v !== '') { update_post_meta($new_post_id, $k, $v); }
+        }
+        // Copy clubs and groups
+        $clubs = self::get_tournament_clubs($tournament_id);
+        self::set_tournament_clubs($new_post_id, $clubs);
+        $groups = get_post_meta($tournament_id, '_obzg_tournament_groups', true);
+        if (is_array($groups)) { update_post_meta($new_post_id, '_obzg_tournament_groups', $groups); }
+        // Rounds are NOT duplicated to avoid confusion
+        return new WP_REST_Response(['id' => $new_post_id], 200);
+    }
+
     public function rest_generate_swiss_round($request) {
-        if (!$this->rest_check_auth($request)) {
-            return new WP_Error('unauthorized', 'Unauthorized', ['status' => 401]);
-        }
-
-        if (!$this->can_manage_tournaments()) {
-            return new WP_Error('insufficient_permissions', 'Insufficient permissions to manage tournaments', ['status' => 403]);
-        }
-
         $tournament_id = $request['id'];
         $params = $request->get_params();
         $round_number = isset($params['round_number']) ? intval($params['round_number']) : 1;
@@ -2283,22 +2350,11 @@ class OBZG_Plugin {
         });
         
         self::set_tournament_rounds($tournament_id, $existing_rounds);
-        
-        // Automatically update tournament status
-        $this->update_tournament_status_automatically($tournament_id);
 
         return new WP_REST_Response(['success' => true, 'round' => $new_round], 200);
     }
 
     public function rest_save_match_result($request) {
-        if (!$this->rest_check_auth($request)) {
-            return new WP_Error('unauthorized', 'Unauthorized', ['status' => 401]);
-        }
-
-        if (!$this->can_enter_results()) {
-            return new WP_Error('insufficient_permissions', 'Insufficient permissions to enter results', ['status' => 403]);
-        }
-
         $tournament_id = $request['id'];
         $params = $request->get_params();
         
@@ -2363,22 +2419,16 @@ class OBZG_Plugin {
 
         self::set_tournament_rounds($tournament_id, $rounds);
         $this->update_tournament_standings_from_match($tournament_id, $club1_id, $club2_id, $club1_score, $club2_score);
-        
-        // Automatically update tournament status
-        $this->update_tournament_status_automatically($tournament_id);
+
+        // Auto-update tournament status after saving match result
+        $clubs = self::get_tournament_clubs($tournament_id);
+        $updated_rounds = self::get_tournament_rounds($tournament_id);
+        $this->auto_update_tournament_status($tournament_id, $clubs, $updated_rounds);
 
         return new WP_REST_Response(['success' => true], 200);
     }
 
     public function rest_add_team_to_tournament($request) {
-        if (!$this->rest_check_auth($request)) {
-            return new WP_Error('unauthorized', 'Unauthorized', ['status' => 401]);
-        }
-
-        if (!$this->can_manage_tournaments()) {
-            return new WP_Error('insufficient_permissions', 'Insufficient permissions to manage tournaments', ['status' => 403]);
-        }
-
         $tournament_id = $request['id'];
         $params = $request->get_params();
         $club_id = isset($params['club_id']) ? intval($params['club_id']) : 0;
@@ -2419,22 +2469,11 @@ class OBZG_Plugin {
                 self::set_tournament_standings($tournament_id, $standings);
             }
         }
-        
-        // Automatically update tournament status
-        $this->update_tournament_status_automatically($tournament_id);
 
         return new WP_REST_Response(['success' => true], 200);
     }
 
     public function rest_remove_team_from_tournament($request) {
-        if (!$this->rest_check_auth($request)) {
-            return new WP_Error('unauthorized', 'Unauthorized', ['status' => 401]);
-        }
-
-        if (!$this->can_manage_tournaments()) {
-            return new WP_Error('insufficient_permissions', 'Insufficient permissions to manage tournaments', ['status' => 403]);
-        }
-
         $tournament_id = $request['id'];
         $params = $request->get_params();
         $club_id = isset($params['club_id']) ? intval($params['club_id']) : 0;
@@ -2460,22 +2499,11 @@ class OBZG_Plugin {
             });
             self::set_tournament_standings($tournament_id, array_values($standings));
         }
-        
-        // Automatically update tournament status
-        $this->update_tournament_status_automatically($tournament_id);
 
         return new WP_REST_Response(['success' => true], 200);
     }
 
     public function rest_add_sample_clubs($request) {
-        if (!$this->rest_check_auth($request)) {
-            return new WP_Error('unauthorized', 'Unauthorized', ['status' => 401]);
-        }
-
-        if (!$this->can_manage_tournaments()) {
-            return new WP_Error('insufficient_permissions', 'Insufficient permissions to manage tournaments', ['status' => 403]);
-        }
-
         $tournament_id = $request['id'];
         $params = $request->get_params();
         $count = isset($params['count']) ? intval($params['count']) : 16;
@@ -2551,9 +2579,6 @@ class OBZG_Plugin {
             }
         }
         self::set_tournament_clubs($tournament_id, $existing_clubs);
-        
-        // Automatically update tournament status
-        $this->update_tournament_status_automatically($tournament_id);
 
         return new WP_REST_Response([
             'success' => true, 
@@ -2640,9 +2665,6 @@ class OBZG_Plugin {
         // Save the updated clubs list
         self::set_tournament_clubs($tournament_id, $clubs);
         
-        // Automatically update tournament status
-        $this->update_tournament_status_automatically($tournament_id);
-        
         return new WP_REST_Response([
             'success' => true,
             'teams_created' => $teams_created,
@@ -2671,6 +2693,134 @@ class OBZG_Plugin {
     }
 
     /**
+     * Check super admin (manage_options) with valid auth token
+     */
+    public function rest_check_super_admin($request) {
+        if ($this->rest_check_auth($request) !== true) {
+            return false;
+        }
+        $u = wp_get_current_user();
+        // Allow either WP admin capability or the designated super admin email
+        if (current_user_can('manage_options')) {
+            return true;
+        }
+        return strtolower($u->user_email) === 'leja.vehovec28@gmail.com';
+    }
+
+    /**
+     * Compute two groups for 18-team tournaments.
+     * - If exactly 18 clubs, split into two groups of 9.
+     * - Group names derived from location if it contains a '+', otherwise Group A/B.
+     */
+    private function compute_tournament_groups($tournament_id, $club_ids, $location_value) {
+        $groups = [];
+        if (!is_array($club_ids)) {
+            return $groups;
+        }
+
+        $group_count = intval(get_post_meta($tournament_id, '_obzg_tournament_group_count', true));
+        if ($group_count < 2) {
+            return $groups; // no groups configured
+        }
+
+        // Build names from location split, then fallback to Group A/B/C...
+        $names = [];
+        if (!empty($location_value)) {
+            $parts = array_map('trim', explode('+', $location_value));
+            foreach ($parts as $p) { if ($p !== '') { $names[] = $p; } }
+        }
+        $alphabet = range('A', 'Z');
+        for ($i = count($names); $i < $group_count; $i++) {
+            $names[] = 'Group ' . $alphabet[$i % 26];
+        }
+
+        // Balanced deterministic split (no shuffle here)
+        $total = count($club_ids);
+        $base = $group_count > 0 ? intdiv($total, $group_count) : $total;
+        $rem = $group_count > 0 ? $total % $group_count : 0;
+        $offset = 0;
+        for ($i = 0; $i < $group_count; $i++) {
+            $size = $base + ($i < $rem ? 1 : 0);
+            $groups[] = [
+                'name' => $names[$i] ?? ('Group ' . $alphabet[$i % 26]),
+                'club_ids' => array_slice($club_ids, $offset, $size)
+            ];
+            $offset += $size;
+        }
+
+        return $groups;
+    }
+
+    /**
+     * Persist groups to post meta
+     */
+    private function set_tournament_groups($tournament_id, $groups) {
+        update_post_meta($tournament_id, '_obzg_tournament_groups', $groups);
+    }
+
+    private function get_tournament_groups($tournament_id) {
+        $groups = get_post_meta($tournament_id, '_obzg_tournament_groups', true);
+        return is_array($groups) ? $groups : [];
+    }
+
+    public function rest_update_tournament_groups($request) {
+        $tournament_id = intval($request['id']);
+        $params = $request->get_json_params();
+        if (!$tournament_id || !is_array($params)) {
+            return new WP_Error('invalid_params', 'Invalid parameters', ['status' => 400]);
+        }
+        // Expect { groups: [ { name, club_ids: [] }, { name, club_ids: [] } ] }
+        $groups = isset($params['groups']) && is_array($params['groups']) ? $params['groups'] : [];
+        $this->set_tournament_groups($tournament_id, $groups);
+        return new WP_REST_Response(['success' => true, 'groups' => $groups], 200);
+    }
+
+    public function rest_randomize_tournament_groups($request) {
+        $tournament_id = intval($request['id']);
+        $tournament = get_post($tournament_id);
+        if (!$tournament || $tournament->post_type !== 'obzg_tournament') {
+            return new WP_Error('not_found', 'Tournament not found', ['status' => 404]);
+        }
+        $clubs = self::get_tournament_clubs($tournament_id);
+        if (!is_array($clubs) || count($clubs) < 2) {
+            return new WP_Error('invalid_state', 'Not enough teams to create groups', ['status' => 400]);
+        }
+        // Shuffle
+        shuffle($clubs);
+        $location_value = get_post_meta($tournament_id, '_obzg_tournament_location', true);
+        $group_count = intval(get_post_meta($tournament_id, '_obzg_tournament_group_count', true));
+        if ($group_count < 2) { $group_count = 2; }
+
+        // Build group names from location (split by '+'), then fallback to Group A/B/C/...
+        $names = [];
+        if (!empty($location_value)) {
+            $parts = array_map('trim', explode('+', $location_value));
+            foreach ($parts as $p) { if ($p !== '') { $names[] = $p; } }
+        }
+        $alphabet = range('A', 'Z');
+        for ($i = count($names); $i < $group_count; $i++) {
+            $names[] = 'Group ' . $alphabet[$i % 26];
+        }
+
+        // Balanced split
+        $total = count($clubs);
+        $base = intdiv($total, $group_count);
+        $rem = $total % $group_count;
+        $offset = 0;
+        $groups = [];
+        for ($i = 0; $i < $group_count; $i++) {
+            $size = $base + ($i < $rem ? 1 : 0);
+            $groups[] = [
+                'name' => $names[$i] ?? ('Group ' . $alphabet[$i % 26]),
+                'club_ids' => array_slice($clubs, $offset, $size)
+            ];
+            $offset += $size;
+        }
+        $this->set_tournament_groups($tournament_id, $groups);
+        return new WP_REST_Response(['success' => true, 'groups' => $groups], 200);
+    }
+
+    /**
      * Check if user is authenticated
      */
     public function rest_check_auth($request) {
@@ -2688,6 +2838,13 @@ class OBZG_Plugin {
         }
         
         return false;
+    }
+
+    /**
+     * Allow public read access (no authentication required)
+     */
+    public function rest_check_public_read($request) {
+        return true;
     }
 
     /**
@@ -2729,19 +2886,14 @@ class OBZG_Plugin {
     }
 
     /**
-     * User registration (admin only)
+     * User registration
      */
     public function rest_auth_register($request) {
-        if (!$this->can_create_users()) {
-            return new WP_Error('insufficient_permissions', 'Only administrators can create new users', ['status' => 403]);
-        }
-
         $params = $request->get_params();
         
         $name = sanitize_text_field($params['name'] ?? '');
         $email = sanitize_email($params['email'] ?? '');
         $password = $params['password'] ?? '';
-        $role = sanitize_text_field($params['role'] ?? 'obzg_user');
         
         if (empty($name) || empty($email) || empty($password)) {
             return new WP_Error('missing_fields', 'All fields are required', ['status' => 400]);
@@ -2753,12 +2905,6 @@ class OBZG_Plugin {
         
         if (email_exists($email)) {
             return new WP_Error('email_exists', 'Email already exists', ['status' => 400]);
-        }
-        
-        // Validate role
-        $valid_roles = ['obzg_user', 'obzg_super_admin'];
-        if (!in_array($role, $valid_roles)) {
-            return new WP_Error('invalid_role', 'Invalid role specified', ['status' => 400]);
         }
         
         $user_id = wp_create_user($email, $password, $email);
@@ -2773,10 +2919,6 @@ class OBZG_Plugin {
             'first_name' => $name
         ]);
         
-        // Set user role
-        $user = new WP_User($user_id);
-        $user->set_role($role);
-        
         $token = $this->generate_token($user_id);
         
         return [
@@ -2784,9 +2926,6 @@ class OBZG_Plugin {
                 'id' => $user_id,
                 'name' => $name,
                 'email' => $email,
-                'role' => $role,
-                'role_name' => $this->get_user_role_name($user_id),
-                'capabilities' => $this->get_user_capabilities($user_id),
                 'last_login' => current_time('mysql')
             ],
             'token' => $token
@@ -2830,9 +2969,6 @@ class OBZG_Plugin {
                 'id' => $user->ID,
                 'name' => $user->display_name,
                 'email' => $user->user_email,
-                'role' => $this->get_user_role_name($user->ID),
-                'role_name' => $this->get_user_role_name($user->ID),
-                'capabilities' => $this->get_user_capabilities($user->ID),
                 'last_login' => get_user_meta($user->ID, 'last_login', true)
             ],
             'token' => $token
@@ -2865,12 +3001,50 @@ class OBZG_Plugin {
                 'id' => $user->ID,
                 'name' => $user->display_name,
                 'email' => $user->user_email,
-                'role' => $this->get_user_role_name($user->ID),
-                'role_name' => $this->get_user_role_name($user->ID),
-                'capabilities' => $this->get_user_capabilities($user->ID),
-                'last_login' => get_user_meta($user->ID, 'last_login', true)
+                'last_login' => get_user_meta($user->ID, 'last_login', true),
+                'roles' => $user->roles
             ]
         ];
+    }
+
+    public function rest_get_users($request) {
+        $wp_users = get_users();
+        $out = [];
+        foreach ($wp_users as $u) {
+            $out[] = [
+                'id' => $u->ID,
+                'name' => $u->display_name,
+                'email' => $u->user_email,
+                'roles' => $u->roles,
+            ];
+        }
+        return new WP_REST_Response($out, 200);
+    }
+
+    public function rest_update_user($request) {
+        $id = intval($request['id']);
+        $params = $request->get_json_params();
+        $u = get_user_by('id', $id);
+        if (!$u) { return new WP_Error('not_found', 'User not found', ['status'=>404]); }
+        if (!empty($params['name'])) {
+            wp_update_user(['ID'=>$id, 'display_name'=>sanitize_text_field($params['name'])]);
+        }
+        if (!empty($params['password'])) {
+            wp_set_password($params['password'], $id);
+        }
+        if (isset($params['role'])) {
+            $role = $params['role'] === 'administrator' ? 'administrator' : 'subscriber';
+            $u->set_role($role);
+        }
+        return new WP_REST_Response(['success'=>true], 200);
+    }
+
+    public function rest_delete_user($request) {
+        $id = intval($request['id']);
+        require_once ABSPATH . 'wp-admin/includes/user.php';
+        $res = wp_delete_user($id);
+        if (!$res) { return new WP_Error('delete_failed','Failed to delete user',['status'=>500]); }
+        return new WP_REST_Response(['success'=>true], 200);
     }
 
     /**
@@ -2979,485 +3153,6 @@ class OBZG_Plugin {
         return [
             'message' => 'User deleted successfully',
             'deleted_user' => $deleted_user
-        ];
-    }
-
-    /**
-     * Add custom user roles
-     */
-    public function add_custom_user_roles() {
-        // Add Super Admin role (if it doesn't exist)
-        if (!get_role('obzg_super_admin')) {
-            add_role('obzg_super_admin', 'OBZG Super Admin', [
-                'read' => true,
-                'edit_posts' => true,
-                'delete_posts' => true,
-                'publish_posts' => true,
-                'edit_others_posts' => true,
-                'delete_others_posts' => true,
-                'manage_options' => true,
-                'edit_users' => true,
-                'delete_users' => true,
-                'create_users' => true,
-                'list_users' => true,
-                'obzg_manage_tournaments' => true,
-                'obzg_manage_clubs' => true,
-                'obzg_manage_players' => true,
-                'obzg_enter_results' => true,
-                'obzg_create_users' => true,
-                'obzg_manage_users' => true
-            ]);
-        }
-
-        // Add Regular User role (if it doesn't exist)
-        if (!get_role('obzg_user')) {
-            add_role('obzg_user', 'OBZG User', [
-                'read' => true,
-                'obzg_enter_results' => true
-            ]);
-        }
-
-        // Add capabilities to subscriber role (read-only access)
-        $subscriber_role = get_role('subscriber');
-        if ($subscriber_role) {
-            $subscriber_role->add_cap('obzg_enter_results');
-            // Subscribers can only enter results, no management capabilities
-        }
-
-        // Add capabilities to administrator role
-        $admin_role = get_role('administrator');
-        if ($admin_role) {
-            $admin_role->add_cap('obzg_manage_tournaments');
-            $admin_role->add_cap('obzg_manage_clubs');
-            $admin_role->add_cap('obzg_manage_players');
-            $admin_role->add_cap('obzg_enter_results');
-            $admin_role->add_cap('obzg_create_users');
-            $admin_role->add_cap('obzg_manage_users');
-        }
-    }
-
-    /**
-     * Check if user has specific capability
-     */
-    private function user_has_capability($capability) {
-        $user = wp_get_current_user();
-        return $user->has_cap($capability);
-    }
-
-    /**
-     * Check if user is super admin
-     */
-    private function is_super_admin() {
-        $user = wp_get_current_user();
-        return $user->has_cap('obzg_manage_users') && $user->has_cap('obzg_create_users');
-    }
-
-    /**
-     * Check if user can manage tournaments
-     */
-    private function can_manage_tournaments() {
-        return $this->user_has_capability('obzg_manage_tournaments');
-    }
-
-    /**
-     * Check if user can manage clubs
-     */
-    private function can_manage_clubs() {
-        return $this->user_has_capability('obzg_manage_clubs');
-    }
-
-    /**
-     * Check if user can manage players
-     */
-    private function can_manage_players() {
-        return $this->user_has_capability('obzg_manage_players');
-    }
-
-    /**
-     * Check if user can enter results
-     */
-    private function can_enter_results() {
-        return $this->user_has_capability('obzg_enter_results');
-    }
-
-    /**
-     * Check if user can create users
-     */
-    private function can_create_users() {
-        return $this->user_has_capability('obzg_create_users');
-    }
-
-    /**
-     * Check if user can manage users
-     */
-    private function can_manage_users() {
-        return $this->user_has_capability('obzg_manage_users');
-    }
-
-    /**
-     * Get user role name
-     */
-    private function get_user_role_name($user_id) {
-        $user = get_user_by('ID', $user_id);
-        if (!$user) return 'guest';
-        
-        $roles = $user->roles;
-        if (empty($roles)) return 'guest';
-        
-        // Return the first role
-        $role = $roles[0];
-        
-        // Map role names to display names
-        $role_names = [
-            'obzg_super_admin' => 'Super Admin',
-            'obzg_user' => 'OBZG User',
-            'subscriber' => 'OBZG Uporabnik',
-            'guest' => 'Guest'
-        ];
-        
-        return $role_names[$role] ?? $role;
-    }
-
-    /**
-     * Get user capabilities
-     */
-    private function get_user_capabilities($user_id) {
-        $user = get_user_by('ID', $user_id);
-        if (!$user) return [];
-        
-        // Get user role
-        $user_roles = $user->roles;
-        $is_subscriber = in_array('subscriber', $user_roles);
-        
-        // Subscribers get very limited capabilities
-        if ($is_subscriber) {
-            return [
-                'obzg_manage_tournaments' => false,
-                'obzg_manage_clubs' => false,
-                'obzg_manage_players' => false,
-                'obzg_enter_results' => true,  // Can only enter results
-                'obzg_create_users' => false,
-                'obzg_manage_users' => false
-            ];
-        }
-        
-        // For other roles, check actual capabilities
-        return [
-            'obzg_manage_tournaments' => $user->has_cap('obzg_manage_tournaments'),
-            'obzg_manage_clubs' => $user->has_cap('obzg_manage_clubs'),
-            'obzg_manage_players' => $user->has_cap('obzg_manage_players'),
-            'obzg_enter_results' => $user->has_cap('obzg_enter_results'),
-            'obzg_create_users' => $user->has_cap('obzg_create_users'),
-            'obzg_manage_users' => $user->has_cap('obzg_manage_users')
-        ];
-    }
-
-    /**
-     * Automatically update tournament status based on current state
-     */
-    private function update_tournament_status_automatically($tournament_id) {
-        $clubs = self::get_tournament_clubs($tournament_id);
-        $rounds = self::get_tournament_rounds($tournament_id);
-        $num_rounds = get_post_meta($tournament_id, '_obzg_tournament_num_rounds', true);
-        
-        // If no teams, status should be 'draft' or empty
-        if (empty($clubs)) {
-            update_post_meta($tournament_id, '_obzg_tournament_status', 'draft');
-            return 'draft';
-        }
-        
-        // If teams exist but no rounds generated, status should be 'active'
-        if (!empty($clubs) && empty($rounds)) {
-            update_post_meta($tournament_id, '_obzg_tournament_status', 'active');
-            return 'active';
-        }
-        
-        // If rounds exist, check if all matches are completed
-        if (!empty($rounds)) {
-            $all_matches_completed = true;
-            $total_matches = 0;
-            $completed_matches = 0;
-            
-            foreach ($rounds as $round) {
-                if (isset($round['matches']) && is_array($round['matches'])) {
-                    foreach ($round['matches'] as $match) {
-                        $total_matches++;
-                        $result = self::get_match_result($match['id']);
-                        if (!empty($result) && isset($result['club1_score']) && isset($result['club2_score'])) {
-                            $completed_matches++;
-                        } else {
-                            $all_matches_completed = false;
-                        }
-                    }
-                }
-            }
-            
-            // If all matches are completed, status should be 'completed'
-            if ($all_matches_completed && $total_matches > 0) {
-                update_post_meta($tournament_id, '_obzg_tournament_status', 'completed');
-                return 'completed';
-            } else {
-                // If some matches are completed but not all, status should be 'active'
-                update_post_meta($tournament_id, '_obzg_tournament_status', 'active');
-                return 'active';
-            }
-        }
-        
-        // Default fallback
-        update_post_meta($tournament_id, '_obzg_tournament_status', 'active');
-        return 'active';
-    }
-
-    /**
-     * Register user management REST routes
-     */
-    public function register_user_management_routes() {
-        // Get all users (admin only)
-        register_rest_route('obzg/v1', '/users', [
-            'methods' => 'GET',
-            'callback' => [$this, 'rest_get_users'],
-            'permission_callback' => [$this, 'rest_check_auth']
-        ]);
-
-        // Create new user (admin only)
-        register_rest_route('obzg/v1', '/users', [
-            'methods' => 'POST',
-            'callback' => [$this, 'rest_create_user'],
-            'permission_callback' => [$this, 'rest_check_auth']
-        ]);
-
-        // Update user (admin only)
-        register_rest_route('obzg/v1', '/users/(?P<id>\d+)', [
-            'methods' => 'PUT',
-            'callback' => [$this, 'rest_update_user'],
-            'permission_callback' => [$this, 'rest_check_auth']
-        ]);
-
-        // Delete user (admin only)
-        register_rest_route('obzg/v1', '/users/(?P<id>\d+)', [
-            'methods' => 'DELETE',
-            'callback' => [$this, 'rest_delete_user'],
-            'permission_callback' => [$this, 'rest_check_auth']
-        ]);
-
-        // Get user roles
-        register_rest_route('obzg/v1', '/roles', [
-            'methods' => 'GET',
-            'callback' => [$this, 'rest_get_roles'],
-            'permission_callback' => [$this, 'rest_check_auth']
-        ]);
-    }
-
-    /**
-     * Get all users (admin only)
-     */
-    public function rest_get_users($request) {
-        if (!$this->can_manage_users()) {
-            return new WP_Error('insufficient_permissions', 'Insufficient permissions', ['status' => 403]);
-        }
-
-        $users = get_users([
-            'orderby' => 'display_name',
-            'order' => 'ASC'
-        ]);
-
-        $user_list = [];
-        foreach ($users as $user) {
-            $user_list[] = [
-                'id' => $user->ID,
-                'name' => $user->display_name,
-                'email' => $user->user_email,
-                'role' => $this->get_user_role_name($user->ID),
-                'role_name' => $this->get_user_role_name($user->ID),
-                'capabilities' => $this->get_user_capabilities($user->ID),
-                'last_login' => get_user_meta($user->ID, 'last_login', true),
-                'registered' => $user->user_registered
-            ];
-        }
-
-        return $user_list;
-    }
-
-    /**
-     * Create new user (admin only)
-     */
-    public function rest_create_user($request) {
-        if (!$this->can_create_users()) {
-            return new WP_Error('insufficient_permissions', 'Insufficient permissions', ['status' => 403]);
-        }
-
-        $params = $request->get_params();
-        
-        $name = sanitize_text_field($params['name'] ?? '');
-        $email = sanitize_email($params['email'] ?? '');
-        $password = $params['password'] ?? '';
-        $role = sanitize_text_field($params['role'] ?? 'obzg_user');
-        
-        if (empty($name) || empty($email) || empty($password)) {
-            return new WP_Error('missing_fields', 'All fields are required', ['status' => 400]);
-        }
-        
-        if (strlen($password) < 6) {
-            return new WP_Error('password_too_short', 'Password must be at least 6 characters', ['status' => 400]);
-        }
-        
-        if (email_exists($email)) {
-            return new WP_Error('email_exists', 'Email already exists', ['status' => 400]);
-        }
-        
-        // Validate role
-        $valid_roles = ['obzg_user', 'obzg_super_admin'];
-        if (!in_array($role, $valid_roles)) {
-            return new WP_Error('invalid_role', 'Invalid role specified', ['status' => 400]);
-        }
-        
-        $user_id = wp_create_user($email, $password, $email);
-        
-        if (is_wp_error($user_id)) {
-            return $user_id;
-        }
-        
-        wp_update_user([
-            'ID' => $user_id,
-            'display_name' => $name,
-            'first_name' => $name
-        ]);
-        
-        // Set user role
-        $user = new WP_User($user_id);
-        $user->set_role($role);
-        
-        return [
-            'user' => [
-                'id' => $user_id,
-                'name' => $name,
-                'email' => $email,
-                'role' => $role,
-                'role_name' => $this->get_user_role_name($user_id),
-                'capabilities' => $this->get_user_capabilities($user_id),
-                'last_login' => null,
-                'registered' => current_time('mysql')
-            ]
-        ];
-    }
-
-    /**
-     * Update user (admin only)
-     */
-    public function rest_update_user($request) {
-        if (!$this->can_manage_users()) {
-            return new WP_Error('insufficient_permissions', 'Insufficient permissions', ['status' => 403]);
-        }
-
-        $user_id = intval($request['id']);
-        $params = $request->get_params();
-        
-        $user = get_user_by('ID', $user_id);
-        if (!$user) {
-            return new WP_Error('user_not_found', 'User not found', ['status' => 404]);
-        }
-        
-        $update_data = ['ID' => $user_id];
-        
-        if (isset($params['name'])) {
-            $update_data['display_name'] = sanitize_text_field($params['name']);
-            $update_data['first_name'] = sanitize_text_field($params['name']);
-        }
-        
-        if (isset($params['email'])) {
-            $email = sanitize_email($params['email']);
-            if ($email !== $user->user_email && email_exists($email)) {
-                return new WP_Error('email_exists', 'Email already exists', ['status' => 400]);
-            }
-            $update_data['user_email'] = $email;
-        }
-        
-        if (isset($params['password']) && !empty($params['password'])) {
-            if (strlen($params['password']) < 6) {
-                return new WP_Error('password_too_short', 'Password must be at least 6 characters', ['status' => 400]);
-            }
-            $update_data['user_pass'] = $params['password'];
-        }
-        
-        $result = wp_update_user($update_data);
-        
-        if (is_wp_error($result)) {
-            return $result;
-        }
-        
-        // Update role if provided
-        if (isset($params['role'])) {
-            $role = sanitize_text_field($params['role']);
-            $valid_roles = ['obzg_user', 'obzg_super_admin'];
-            if (in_array($role, $valid_roles)) {
-                $user = new WP_User($user_id);
-                $user->set_role($role);
-            }
-        }
-        
-        return [
-            'user' => [
-                'id' => $user_id,
-                'name' => $update_data['display_name'] ?? $user->display_name,
-                'email' => $update_data['user_email'] ?? $user->user_email,
-                'role' => $this->get_user_role_name($user_id),
-                'role_name' => $this->get_user_role_name($user_id),
-                'capabilities' => $this->get_user_capabilities($user_id),
-                'last_login' => get_user_meta($user_id, 'last_login', true),
-                'registered' => $user->user_registered
-            ]
-        ];
-    }
-
-    /**
-     * Delete user (admin only)
-     */
-    public function rest_delete_user($request) {
-        if (!$this->can_manage_users()) {
-            return new WP_Error('insufficient_permissions', 'Insufficient permissions', ['status' => 403]);
-        }
-
-        $user_id = intval($request['id']);
-        
-        $user = get_user_by('ID', $user_id);
-        if (!$user) {
-            return new WP_Error('user_not_found', 'User not found', ['status' => 404]);
-        }
-        
-        // Don't allow deleting the current user
-        $current_user = wp_get_current_user();
-        if ($user_id === $current_user->ID) {
-            return new WP_Error('cannot_delete_self', 'Cannot delete your own account', ['status' => 400]);
-        }
-        
-        $result = wp_delete_user($user_id);
-        
-        if (!$result) {
-            return new WP_Error('delete_failed', 'Failed to delete user', ['status' => 500]);
-        }
-        
-        return ['message' => 'User deleted successfully'];
-    }
-
-    /**
-     * Get available roles
-     */
-    public function rest_get_roles($request) {
-        if (!$this->can_manage_users()) {
-            return new WP_Error('insufficient_permissions', 'Insufficient permissions', ['status' => 403]);
-        }
-
-        return [
-            [
-                'value' => 'obzg_user',
-                'label' => 'OBZG User',
-                'description' => 'Can enter match results'
-            ],
-            [
-                'value' => 'obzg_super_admin',
-                'label' => 'Super Admin',
-                'description' => 'Full access to all features including user management'
-            ]
         ];
     }
 }
