@@ -867,16 +867,26 @@ class OBZG_Plugin {
         // Get tournament groups to work within group structure
         $groups = $this->get_tournament_groups($tournament_id);
         
+        // Debug logging
+        error_log("OBZG Debug: Tournament ID: $tournament_id, Round: $round_number");
+        error_log("OBZG Debug: Groups found: " . print_r($groups, true));
+        error_log("OBZG Debug: Standings count: " . count($standings));
+        
         // If groups exist, generate matches within each group
         if (!empty($groups)) {
+            error_log("OBZG Debug: Using group-based round generation");
             foreach ($groups as $group) {
+                error_log("OBZG Debug: Processing group: " . $group['name'] . " with " . count($group['club_ids']) . " clubs");
                 $group_matches = $this->generate_group_round($group, $round_number, $standings);
+                error_log("OBZG Debug: Generated " . count($group_matches) . " matches for group " . $group['name']);
                 $matches = array_merge($matches, $group_matches);
             }
+            error_log("OBZG Debug: Total matches generated: " . count($matches));
             return $matches;
         }
         
         // Fallback to original Swiss system if no groups
+        error_log("OBZG Debug: No groups found, using fallback Swiss system");
         return $this->generate_swiss_round_fallback($standings, $round_number);
     }
     
@@ -885,12 +895,17 @@ class OBZG_Plugin {
         $group_clubs = $group['club_ids'];
         $group_standings = [];
         
+        error_log("OBZG Debug: Group " . $group['name'] . " has clubs: " . print_r($group_clubs, true));
+        
         // Get standings for clubs in this group
         foreach ($standings as $standing) {
             if (in_array($standing['club_id'], $group_clubs)) {
                 $group_standings[] = $standing;
             }
         }
+        
+        error_log("OBZG Debug: Found " . count($group_standings) . " standings for group " . $group['name']);
+        error_log("OBZG Debug: Group standings: " . print_r($group_standings, true));
         
         // Sort group standings by points (descending), then by wins, then by games played
         usort($group_standings, function($a, $b) {
