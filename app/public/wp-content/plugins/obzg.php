@@ -831,7 +831,7 @@ class OBZG_Plugin {
         }
 
         // Generate the specific round
-        $round_matches = $this->generate_swiss_round($standings, $round_number);
+        $round_matches = $this->generate_swiss_round($standings, $round_number, $tournament_id);
         
         // Add the new round to existing rounds
         $existing_rounds[] = [
@@ -854,7 +854,162 @@ class OBZG_Plugin {
         ]);
     }
 
-    private function generate_swiss_round($standings, $round_number) {
+    private function generate_swiss_round($standings, $round_number, $tournament_id) {
+        $matches = [];
+        $used_clubs = [];
+        
+        // Get tournament groups to work within group structure
+        $groups = $this->get_tournament_groups($tournament_id);
+        
+        // If groups exist, generate matches within each group
+        if (!empty($groups)) {
+            foreach ($groups as $group) {
+                $group_matches = $this->generate_group_round($group, $round_number, $standings);
+                $matches = array_merge($matches, $group_matches);
+            }
+            return $matches;
+        }
+        
+        // Fallback to original Swiss system if no groups
+        return $this->generate_swiss_round_fallback($standings, $round_number);
+    }
+    
+    private function generate_group_round($group, $round_number, $standings) {
+        $matches = [];
+        $group_clubs = $group['club_ids'];
+        $group_standings = [];
+        
+        // Get standings for clubs in this group
+        foreach ($standings as $standing) {
+            if (in_array($standing['club_id'], $group_clubs)) {
+                $group_standings[] = $standing;
+            }
+        }
+        
+        // Sort group standings by points (descending), then by wins, then by games played
+        usort($group_standings, function($a, $b) {
+            if ($a['points'] != $b['points']) {
+                return $b['points'] - $a['points'];
+            }
+            if ($a['wins'] != $b['wins']) {
+                return $b['wins'] - $a['wins'];
+            }
+            return $a['games_played'] - $b['games_played'];
+        });
+        
+        $clubs_copy = array_values($group_standings);
+        $used_in_group = [];
+        
+        // First round: random pairing within group
+        if ($round_number == 1) {
+            shuffle($clubs_copy);
+            
+            for ($i = 0; $i < count($clubs_copy) - 1; $i += 2) {
+                $matches[] = [
+                    'match_id' => 0,
+                    'club1_id' => $clubs_copy[$i]['club_id'],
+                    'club1_name' => $clubs_copy[$i]['club_name'],
+                    'club2_id' => $clubs_copy[$i + 1]['club_id'],
+                    'club2_name' => $clubs_copy[$i + 1]['club_name'],
+                    'result' => null,
+                    'round' => $round_number,
+                    'group' => $group['name']
+                ];
+                $used_in_group[] = $clubs_copy[$i]['club_id'];
+                $used_in_group[] = $clubs_copy[$i + 1]['club_id'];
+            }
+            
+            // Handle odd number of clubs in group (one team gets BYE)
+            if (count($clubs_copy) % 2 == 1) {
+                $bye_club = $clubs_copy[count($clubs_copy) - 1];
+                $matches[] = [
+                    'match_id' => 0,
+                    'club1_id' => $bye_club['club_id'],
+                    'club1_name' => $bye_club['club_name'],
+                    'club2_id' => 0,
+                    'club2_name' => 'BYE',
+                    'result' => null,
+                    'round' => $round_number,
+                    'group' => $group['name']
+                ];
+                $used_in_group[] = $bye_club['club_id'];
+            }
+        } else {
+            // Subsequent rounds: Swiss system pairing within group (no rematches)
+            $unpaired_clubs = $clubs_copy;
+            
+            while (!empty($unpaired_clubs)) {
+                $current_club = array_shift($unpaired_clubs);
+                if (in_array($current_club['club_id'], $used_in_group)) {
+                    continue;
+                }
+                
+                // Find all possible opponents within group (not used, not already played)
+                $possible_opponents = [];
+                foreach ($unpaired_clubs as $index => $potential_opponent) {
+                    if (in_array($potential_opponent['club_id'], $used_in_group)) {
+                        continue;
+                    }
+                    // Check if they have already played against each other
+                    if (in_array($potential_opponent['club_id'], $current_club['opponents'])) {
+                        continue;
+                    }
+                    // Double-check: also check if current club is in opponent's opponents list
+                    if (in_array($current_club['club_id'], $potential_opponent['opponents'])) {
+                        continue;
+                    }
+                    $possible_opponents[] = [
+                        'opponent' => $potential_opponent,
+                        'index' => $index,
+                        'score_diff' => abs($potential_opponent['points'] - $current_club['points'])
+                    ];
+                }
+                
+                // Prefer same score, then closest score
+                usort($possible_opponents, function($a, $b) {
+                    if ($a['score_diff'] == $b['score_diff']) return 0;
+                    return $a['score_diff'] < $b['score_diff'] ? -1 : 1;
+                });
+                
+                if (!empty($possible_opponents)) {
+                    $best = $possible_opponents[0];
+                    $best_opponent = $best['opponent'];
+                    $best_opponent_index = $best['index'];
+                    $matches[] = [
+                        'match_id' => 0,
+                        'club1_id' => $current_club['club_id'],
+                        'club1_name' => $current_club['club_name'],
+                        'club2_id' => $best_opponent['club_id'],
+                        'club2_name' => $best_opponent['club_name'],
+                        'result' => null,
+                        'round' => $round_number,
+                        'group' => $group['name']
+                    ];
+                    $used_in_group[] = $current_club['club_id'];
+                    $used_in_group[] = $best_opponent['club_id'];
+                    unset($unpaired_clubs[$best_opponent_index]);
+                    $unpaired_clubs = array_values($unpaired_clubs); // Re-index array
+                } else {
+                    // No valid opponent left in group, assign BYE
+                    $matches[] = [
+                        'match_id' => 0,
+                        'club1_id' => $current_club['club_id'],
+                        'club1_name' => $current_club['club_name'],
+                        'club2_id' => 0,
+                        'club2_name' => 'BYE',
+                        'result' => null,
+                        'round' => $round_number,
+                        'group' => $group['name']
+                    ];
+                    $used_in_group[] = $current_club['club_id'];
+                }
+            }
+        }
+        
+        return $matches;
+    }
+    
+    private function generate_swiss_round_fallback($standings, $round_number) {
         $matches = [];
         $used_clubs = [];
         
@@ -971,6 +1126,8 @@ class OBZG_Plugin {
         }
         return $matches;
     }
+    
+
 
     private function update_standings_opponents(&$standings, $club1_id, $club2_id) {
         foreach ($standings as &$standing) {
