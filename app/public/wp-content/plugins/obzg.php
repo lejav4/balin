@@ -846,10 +846,16 @@ class OBZG_Plugin {
 
         self::set_tournament_rounds($tournament_id, $existing_rounds);
         
+        // Update standings for any X matches that were created
+        $this->update_standings_for_x_matches($tournament_id, $round_matches);
+        
+        // Get updated standings after X match processing
+        $updated_standings = self::get_tournament_standings($tournament_id);
+        
         $message = $round_number == 1 ? 'First round generated successfully!' : 'Round ' . $round_number . ' generated successfully!';
         wp_send_json_success([
             'rounds' => $existing_rounds, 
-            'standings' => $standings,
+            'standings' => $updated_standings,
             'message' => $message
         ]);
     }
@@ -1145,6 +1151,38 @@ class OBZG_Plugin {
     
 
 
+    private function update_standings_for_x_matches($tournament_id, $round_matches) {
+        $standings = self::get_tournament_standings($tournament_id);
+        if (empty($standings)) {
+            return;
+        }
+        
+        $standings_updated = false;
+        
+        foreach ($round_matches as $match) {
+            // Check if this is an X match (club2_id == 0 and has result)
+            if ($match['club2_id'] == 0 && isset($match['result']) && $match['result']['club1_score'] == 6 && $match['result']['club2_score'] == 0) {
+                $club1_id = $match['club1_id'];
+                
+                // Update standings for the team that beat X
+                foreach ($standings as &$standing) {
+                    if ($standing['club_id'] == $club1_id) {
+                        $standing['games_played']++;
+                        $standing['wins']++;
+                        $standing['points'] += 3;
+                        $standings_updated = true;
+                        break;
+                    }
+                }
+            }
+        }
+        
+        // Save updated standings if any X matches were processed
+        if ($standings_updated) {
+            self::set_tournament_standings($tournament_id, $standings);
+        }
+    }
+
     private function update_standings_opponents(&$standings, $club1_id, $club2_id) {
         foreach ($standings as &$standing) {
             if ($standing['club_id'] == $club1_id && $club2_id > 0) {
@@ -1251,6 +1289,7 @@ class OBZG_Plugin {
             foreach ($standings as &$standing) {
                 if ($standing['club_id'] == $club1_id) {
                     // Club1 automatically gets 3 points for beating X
+                    $standing['games_played']++;
                     $standing['wins']++;
                     $standing['points'] += 3;
                 }
