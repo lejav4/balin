@@ -867,7 +867,7 @@ class OBZG_Plugin {
         // Get tournament groups to work within group structure
         $groups = $this->get_tournament_groups($tournament_id);
         
-        // If groups exist, generate matches within each group
+        // If groups exist, generate matches within each group (location-based separation)
         if (!empty($groups)) {
             foreach ($groups as $group) {
                 $group_matches = $this->generate_group_round($group, $round_number, $standings);
@@ -876,7 +876,20 @@ class OBZG_Plugin {
             return $matches;
         }
         
-        // Fallback to original Swiss system if no groups
+        // If no groups exist but we have location data, create location-based groups automatically
+        $location_value = get_post_meta($tournament_id, '_obzg_tournament_location', true);
+        if (!empty($location_value) && strpos($location_value, '+') !== false) {
+            $location_groups = $this->create_location_based_groups($tournament_id, $standings);
+            if (!empty($location_groups)) {
+                foreach ($location_groups as $group) {
+                    $group_matches = $this->generate_group_round($group, $round_number, $standings);
+                    $matches = array_merge($matches, $group_matches);
+                }
+                return $matches;
+            }
+        }
+        
+        // Fallback to original Swiss system if no groups or location data
         return $this->generate_swiss_round_fallback($standings, $round_number);
     }
     
@@ -885,11 +898,16 @@ class OBZG_Plugin {
         $group_clubs = $group['club_ids'];
         $group_standings = [];
         
-        // Get standings for clubs in this group
+        // Get standings for clubs in this group (location-based separation)
         foreach ($standings as $standing) {
             if (in_array($standing['club_id'], $group_clubs)) {
                 $group_standings[] = $standing;
             }
+        }
+        
+        // Safety check: ensure we only work with clubs from this location group
+        if (empty($group_standings)) {
+            return $matches;
         }
         
         // Sort group standings by points (descending), then by wins, then by games played
@@ -1021,6 +1039,51 @@ class OBZG_Plugin {
         }
         
         return $matches;
+    }
+    
+    private function create_location_based_groups($tournament_id, $standings) {
+        $location_value = get_post_meta($tournament_id, '_obzg_tournament_location', true);
+        if (empty($location_value) || strpos($location_value, '+') === false) {
+            return [];
+        }
+        
+        // Split location by '+' to get group names
+        $location_parts = array_map('trim', explode('+', $location_value));
+        $location_parts = array_filter($location_parts); // Remove empty parts
+        
+        if (count($location_parts) < 2) {
+            return [];
+        }
+        
+        // Get all clubs in the tournament
+        $tournament_clubs = self::get_tournament_clubs($tournament_id);
+        if (empty($tournament_clubs)) {
+            return [];
+        }
+        
+        // Create groups based on location
+        $groups = [];
+        $clubs_per_group = ceil(count($tournament_clubs) / count($location_parts));
+        
+        // Shuffle clubs to randomize group assignment
+        shuffle($tournament_clubs);
+        
+        $offset = 0;
+        foreach ($location_parts as $location_name) {
+            $group_clubs = array_slice($tournament_clubs, $offset, $clubs_per_group);
+            if (!empty($group_clubs)) {
+                $groups[] = [
+                    'name' => $location_name,
+                    'club_ids' => $group_clubs
+                ];
+                $offset += $clubs_per_group;
+            }
+        }
+        
+        // Save these groups for future use
+        $this->set_tournament_groups($tournament_id, $groups);
+        
+        return $groups;
     }
     
     private function generate_swiss_round_fallback($standings, $round_number) {
