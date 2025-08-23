@@ -919,20 +919,24 @@ class OBZG_Plugin {
                 $used_in_group[] = $clubs_copy[$i + 1]['club_id'];
             }
             
-            // Handle odd number of clubs in group (one team gets BYE)
+            // Handle odd number of clubs in group (one team gets X - automatic 6:0 win)
             if (count($clubs_copy) % 2 == 1) {
-                $bye_club = $clubs_copy[count($clubs_copy) - 1];
+                $x_club = $clubs_copy[count($clubs_copy) - 1];
                 $matches[] = [
                     'match_id' => 0,
-                    'club1_id' => $bye_club['club_id'],
-                    'club1_name' => $bye_club['club_name'],
+                    'club1_id' => $x_club['club_id'],
+                    'club1_name' => $x_club['club_name'],
                     'club2_id' => 0,
-                    'club2_name' => 'BYE',
-                    'result' => null,
+                    'club2_name' => 'X',
+                    'result' => [
+                        'club1_score' => 6,
+                        'club2_score' => 0,
+                        'timestamp' => current_time('mysql')
+                    ],
                     'round' => $round_number,
                     'group' => $group['name']
                 ];
-                $used_in_group[] = $bye_club['club_id'];
+                $used_in_group[] = $x_club['club_id'];
             }
         } else {
             // Subsequent rounds: Swiss system pairing within group (no rematches)
@@ -990,14 +994,18 @@ class OBZG_Plugin {
                     unset($unpaired_clubs[$best_opponent_index]);
                     $unpaired_clubs = array_values($unpaired_clubs); // Re-index array
                 } else {
-                    // No valid opponent left in group, assign BYE
+                    // No valid opponent left in group, assign X - automatic 6:0 win
                     $matches[] = [
                         'match_id' => 0,
                         'club1_id' => $current_club['club_id'],
                         'club1_name' => $current_club['club_name'],
                         'club2_id' => 0,
-                        'club2_name' => 'BYE',
-                        'result' => null,
+                        'club2_name' => 'X',
+                        'result' => [
+                            'club1_score' => 6,
+                            'club2_score' => 0,
+                            'timestamp' => current_time('mysql')
+                        ],
                         'round' => $round_number,
                         'group' => $group['name']
                     ];
@@ -1048,8 +1056,12 @@ class OBZG_Plugin {
                     'club1_id' => $clubs_copy[count($clubs_copy) - 1]['club_id'],
                     'club1_name' => $clubs_copy[count($clubs_copy) - 1]['club_name'],
                     'club2_id' => 0,
-                    'club2_name' => 'BYE',
-                    'result' => null,
+                    'club2_name' => 'X',
+                    'result' => [
+                        'club1_score' => 6,
+                        'club2_score' => 0,
+                        'timestamp' => current_time('mysql')
+                    ],
                     'round' => $round_number
                 ];
             }
@@ -1109,15 +1121,19 @@ class OBZG_Plugin {
                     unset($unpaired_clubs[$best_opponent_index]);
                     $unpaired_clubs = array_values($unpaired_clubs); // Re-index array
                 } else {
-                    // No valid opponent left (all opponents already played), assign BYE
+                    // No valid opponent left (all opponents already played), assign X - automatic 6:0 win
                     error_log("OBZG Debug: No valid opponent found for club {$current_club['club_id']} ({$current_club['club_name']}) - all opponents already played");
                     $matches[] = [
                         'match_id' => 0,
                         'club1_id' => $current_club['club_id'],
                         'club1_name' => $current_club['club_name'],
                         'club2_id' => 0,
-                        'club2_name' => 'BYE',
-                        'result' => null,
+                        'club2_name' => 'X',
+                        'result' => [
+                            'club1_score' => 6,
+                            'club2_score' => 0,
+                            'timestamp' => current_time('mysql')
+                        ],
                         'round' => $round_number
                     ];
                     $used_clubs[] = $current_club['club_id'];
@@ -1226,6 +1242,17 @@ class OBZG_Plugin {
                 } else {
                     $standing['draws']++;
                     $standing['points'] += 1;
+                }
+            }
+        }
+        
+        // Handle X matches (automatic 6:0 results) - update standings immediately
+        if ($club2_id == 0) { // X opponent
+            foreach ($standings as &$standing) {
+                if ($standing['club_id'] == $club1_id) {
+                    // Club1 automatically gets 3 points for beating X
+                    $standing['wins']++;
+                    $standing['points'] += 3;
                 }
             }
         }
