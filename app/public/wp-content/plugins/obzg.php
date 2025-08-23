@@ -864,32 +864,47 @@ class OBZG_Plugin {
         $matches = [];
         $used_clubs = [];
         
+        // Debug logging
+        error_log("OBZG DEBUG: generate_swiss_round called for tournament $tournament_id, round $round_number");
+        
         // Get tournament groups to work within group structure
         $groups = $this->get_tournament_groups($tournament_id);
+        error_log("OBZG DEBUG: Existing groups: " . json_encode($groups));
         
         // If groups exist, generate matches within each group (location-based separation)
         if (!empty($groups)) {
+            error_log("OBZG DEBUG: Using existing groups for location-based separation");
             foreach ($groups as $group) {
+                error_log("OBZG DEBUG: Processing group: " . $group['name'] . " with " . count($group['club_ids']) . " clubs");
                 $group_matches = $this->generate_group_round($group, $round_number, $standings);
                 $matches = array_merge($matches, $group_matches);
             }
+            error_log("OBZG DEBUG: Generated " . count($matches) . " matches from existing groups");
             return $matches;
         }
         
         // If no groups exist but we have location data, create location-based groups automatically
         $location_value = get_post_meta($tournament_id, '_obzg_tournament_location', true);
+        error_log("OBZG DEBUG: No existing groups, checking location: '$location_value'");
+        
         if (!empty($location_value) && strpos($location_value, '+') !== false) {
+            error_log("OBZG DEBUG: Creating location-based groups from: '$location_value'");
             $location_groups = $this->create_location_based_groups($tournament_id, $standings);
+            error_log("OBZG DEBUG: Created location groups: " . json_encode($location_groups));
+            
             if (!empty($location_groups)) {
                 foreach ($location_groups as $group) {
+                    error_log("OBZG DEBUG: Processing location group: " . $group['name'] . " with " . count($group['club_ids']) . " clubs");
                     $group_matches = $this->generate_group_round($group, $round_number, $standings);
                     $matches = array_merge($matches, $group_matches);
                 }
+                error_log("OBZG DEBUG: Generated " . count($matches) . " matches from location groups");
                 return $matches;
             }
         }
         
         // Fallback to original Swiss system if no groups or location data
+        error_log("OBZG DEBUG: Falling back to original Swiss system");
         return $this->generate_swiss_round_fallback($standings, $round_number);
     }
     
@@ -1042,28 +1057,39 @@ class OBZG_Plugin {
     }
     
     private function create_location_based_groups($tournament_id, $standings) {
+        error_log("OBZG DEBUG: create_location_based_groups called for tournament $tournament_id");
+        
         $location_value = get_post_meta($tournament_id, '_obzg_tournament_location', true);
+        error_log("OBZG DEBUG: Location value: '$location_value'");
+        
         if (empty($location_value) || strpos($location_value, '+') === false) {
+            error_log("OBZG DEBUG: No location or no '+' separator found");
             return [];
         }
         
         // Split location by '+' to get group names
         $location_parts = array_map('trim', explode('+', $location_value));
         $location_parts = array_filter($location_parts); // Remove empty parts
+        error_log("OBZG DEBUG: Location parts: " . json_encode($location_parts));
         
         if (count($location_parts) < 2) {
+            error_log("OBZG DEBUG: Not enough location parts for groups");
             return [];
         }
         
         // Get all clubs in the tournament
         $tournament_clubs = self::get_tournament_clubs($tournament_id);
+        error_log("OBZG DEBUG: Tournament clubs: " . json_encode($tournament_clubs));
+        
         if (empty($tournament_clubs)) {
+            error_log("OBZG DEBUG: No tournament clubs found");
             return [];
         }
         
         // Create groups based on location
         $groups = [];
         $clubs_per_group = ceil(count($tournament_clubs) / count($location_parts));
+        error_log("OBZG DEBUG: Clubs per group: $clubs_per_group");
         
         // Shuffle clubs to randomize group assignment
         shuffle($tournament_clubs);
@@ -1071,6 +1097,8 @@ class OBZG_Plugin {
         $offset = 0;
         foreach ($location_parts as $location_name) {
             $group_clubs = array_slice($tournament_clubs, $offset, $clubs_per_group);
+            error_log("OBZG DEBUG: Creating group '$location_name' with clubs: " . json_encode($group_clubs));
+            
             if (!empty($group_clubs)) {
                 $groups[] = [
                     'name' => $location_name,
@@ -1080,8 +1108,11 @@ class OBZG_Plugin {
             }
         }
         
+        error_log("OBZG DEBUG: Final groups created: " . json_encode($groups));
+        
         // Save these groups for future use
         $this->set_tournament_groups($tournament_id, $groups);
+        error_log("OBZG DEBUG: Groups saved to database");
         
         return $groups;
     }
