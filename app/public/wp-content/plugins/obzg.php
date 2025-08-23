@@ -867,7 +867,7 @@ class OBZG_Plugin {
         // Get tournament groups to work within group structure
         $groups = $this->get_tournament_groups($tournament_id);
         
-        // Debug logging
+        // Debug logging - FORCE REFRESH
         error_log("OBZG Debug: Tournament ID: $tournament_id, Round: $round_number");
         error_log("OBZG Debug: Groups found: " . print_r($groups, true));
         error_log("OBZG Debug: Standings count: " . count($standings));
