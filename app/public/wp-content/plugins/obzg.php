@@ -2998,7 +2998,11 @@ class OBZG_Plugin {
 
     private function get_tournament_groups($tournament_id) {
         $groups = get_post_meta($tournament_id, '_obzg_tournament_groups', true);
-        return is_array($groups) ? $groups : [];
+        error_log("OBZG Debug: get_tournament_groups called for tournament $tournament_id");
+        error_log("OBZG Debug: Raw groups meta: " . print_r($groups, true));
+        $result = is_array($groups) ? $groups : [];
+        error_log("OBZG Debug: Returning groups: " . print_r($result, true));
+        return $result;
     }
 
     public function rest_update_tournament_groups($request) {
