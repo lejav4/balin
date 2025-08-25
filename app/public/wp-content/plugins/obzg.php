@@ -905,6 +905,28 @@ class OBZG_Plugin {
             }
         }
         
+        // Backfill any missing clubs with default standings so all clubs are considered
+        if (is_array($group_clubs)) {
+            foreach ($group_clubs as $club_id) {
+                $exists = false;
+                foreach ($group_standings as $gs) {
+                    if (isset($gs['club_id']) && intval($gs['club_id']) === intval($club_id)) { $exists = true; break; }
+                }
+                if (!$exists) {
+                    $group_standings[] = [
+                        'club_id' => intval($club_id),
+                        'club_name' => isset($this) && method_exists($this, 'get_club_name_by_id') ? $this->get_club_name_by_id(intval($club_id)) : ('Club ' . $club_id),
+                        'points' => 0,
+                        'wins' => 0,
+                        'draws' => 0,
+                        'losses' => 0,
+                        'games_played' => 0,
+                        'opponents' => []
+                    ];
+                }
+            }
+        }
+        
         // Safety check: ensure we only work with clubs from this location group
         if (empty($group_standings)) {
             return $matches;
@@ -928,6 +950,7 @@ class OBZG_Plugin {
         if ($round_number == 1) {
             shuffle($clubs_copy);
             
+            // Pair all available clubs within the group
             for ($i = 0; $i < count($clubs_copy) - 1; $i += 2) {
                 $matches[] = [
                     'match_id' => 0,
@@ -943,7 +966,7 @@ class OBZG_Plugin {
                 $used_in_group[] = $clubs_copy[$i + 1]['club_id'];
             }
             
-            // Handle odd number of clubs in group (one team gets X - automatic 6:0 win)
+            // If odd number of clubs (e.g., 9), last team gets X with automatic 6:0
             if (count($clubs_copy) % 2 == 1) {
                 $x_club = $clubs_copy[count($clubs_copy) - 1];
                 $matches[] = [
@@ -982,39 +1005,33 @@ class OBZG_Plugin {
                     if (in_array($potential_opponent['club_id'], $current_club['opponents'])) {
                         continue;
                     }
-                    // Double-check: also check if current club is in opponent's opponents list
-                    if (in_array($current_club['club_id'], $potential_opponent['opponents'])) {
-                        continue;
-                    }
-                    $possible_opponents[] = [
-                        'opponent' => $potential_opponent,
-                        'index' => $index,
-                        'score_diff' => abs($potential_opponent['points'] - $current_club['points'])
-                    ];
+                    $possible_opponents[] = $index;
                 }
                 
-                // Prefer same score, then closest score
-                usort($possible_opponents, function($a, $b) {
-                    if ($a['score_diff'] == $b['score_diff']) return 0;
-                    return $a['score_diff'] < $b['score_diff'] ? -1 : 1;
-                });
-                
                 if (!empty($possible_opponents)) {
-                    $best = $possible_opponents[0];
-                    $best_opponent = $best['opponent'];
-                    $best_opponent_index = $best['index'];
+                    // Choose the opponent closest in points
+                    $best_opponent_index = null;
+                    $best_points_diff = PHP_INT_MAX;
+                    foreach ($possible_opponents as $index) {
+                        $points_diff = abs(($current_club['points'] ?? 0) - ($unpaired_clubs[$index]['points'] ?? 0));
+                        if ($points_diff < $best_points_diff) {
+                            $best_points_diff = $points_diff;
+                            $best_opponent_index = $index;
+                        }
+                    }
+                    $opponent = $unpaired_clubs[$best_opponent_index];
                     $matches[] = [
                         'match_id' => 0,
                         'club1_id' => $current_club['club_id'],
                         'club1_name' => $current_club['club_name'],
-                        'club2_id' => $best_opponent['club_id'],
-                        'club2_name' => $best_opponent['club_name'],
+                        'club2_id' => $opponent['club_id'],
+                        'club2_name' => $opponent['club_name'],
                         'result' => null,
                         'round' => $round_number,
                         'group' => $group['name']
                     ];
                     $used_in_group[] = $current_club['club_id'];
-                    $used_in_group[] = $best_opponent['club_id'];
+                    $used_in_group[] = $opponent['club_id'];
                     unset($unpaired_clubs[$best_opponent_index]);
                     $unpaired_clubs = array_values($unpaired_clubs); // Re-index array
                 } else {
