@@ -2622,7 +2622,7 @@ class OBZG_Plugin {
             }
         }
 
-        $matches = $this->generate_swiss_round($standings, $round_number);
+        $matches = $this->generate_swiss_round($standings, $round_number, $tournament_id);
         $new_round = [
             'round' => $round_number,
             'round_number' => $round_number,
@@ -2636,6 +2636,9 @@ class OBZG_Plugin {
         });
         
         self::set_tournament_rounds($tournament_id, $existing_rounds);
+        
+        // Update standings for any X matches that were created
+        $this->update_standings_for_x_matches($tournament_id, $matches);
 
         return new WP_REST_Response(['success' => true, 'round' => $new_round], 200);
     }
